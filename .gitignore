@@ -1,0 +1,7 @@
+# Ignorar archivos sensibles
+.env
+credenciales.json
+
+# Ignorar caché de Python
+__pycache__/
+*.pyc
