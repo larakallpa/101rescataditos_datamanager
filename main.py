@@ -7,9 +7,10 @@ analyzes images using OpenAI's vision capabilities, and stores the data in Googl
 """
 import os
 import logging
+import pandas as pd
+import json
 from datetime import datetime
 from dotenv import load_dotenv
-
 # Import services
 from services.audio_service import AudioProcessor
 from services.image_analysis import ImageAnalyzer
@@ -53,9 +54,10 @@ class AnimalRescueManager:
         self.folder_error_tickets = os.getenv("FOLDER_ERROR_TICKETS")
         
         # Access worksheets
-        self.worksheet_datos = self.sheet_service.get_worksheet("Datos")
-        self.worksheet_gastos = self.sheet_service.get_worksheet("Gastos")
-        
+        self.worksheet_animal = self.sheet_service.get_worksheet("ANIMAL")
+        self.worksheet_gastos = self.sheet_service.get_worksheet("GASTOS") 
+        self.worksheet_eventos = self.sheet_service.get_worksheet("EVENTO") 
+        self.worksheet_interaccion = self.sheet_service.get_worksheet("INTERACCION")
         logger.info("Animal Rescue Manager initialized successfully")
     
     def process_drive_images(self, folder_id, worksheet, image_type="mascota"):
@@ -100,9 +102,9 @@ class AnimalRescueManager:
                     # Update spreadsheet
                     if isinstance(analysis_results, list):
                         for result in analysis_results:
-                            self.sheet_service.update_sheet_from_dict(result, worksheet)
+                            self.sheet_service.insert_sheet_from_dict(result, worksheet)
                     else:
-                        self.sheet_service.update_sheet_from_dict(analysis_results, worksheet)
+                        self.sheet_service.insert_sheet_from_dict(analysis_results, worksheet)
                     
                     # Move file to success folder
                     self.drive_api.move_file(file_id, self.folder_ok_tickets)
@@ -119,52 +121,134 @@ class AnimalRescueManager:
         """Process recent Instagram posts and add them to the worksheet."""
         try:
             # Get the oldest date in our spreadsheet to know which posts to fetch
-            oldest_date = self.sheet_service.get_oldest_date(self.worksheet_datos)
-            
+            oldest_date = self.sheet_service.get_oldest_date(self.worksheet_animal)
+            oldest_id = self.sheet_service.get_oldest_id(self.worksheet_animal)
             # Fetch posts from Instagram API
             posts = self.instagram_api.get_recent_posts(oldest_date)
             logger.info(f"Retrieved {len(posts)} posts from Instagram")
+            posts = self.filtrarPostNuevos(posts)
             
             # Process each post
             for post in posts:
-                try:
+                try: 
                     # Extract post data
                     caption = post.get("caption", "")
                     timestamp = datetime.strptime(post.get("timestamp"), "%Y-%m-%dT%H:%M:%S%z")
                     formatted_date = timestamp.strftime("%d/%m/%Y %H:%M:%S")
                     post_id = post.get("id")
-                    permalink = post.get("permalink")
+                    permalink = post.get("permalink") 
                     
-                    # Get image URL based on media type
-                    media_url = post.get("media_url")
-                    if post.get("media_type") == "VIDEO" and post.get("thumbnail_url"):
-                        media_url = post.get("thumbnail_url")
-                    
-                    if not media_url:
-                        logger.warning(f"Post {post_id} has no image, skipping.")
-                        continue
-                    
-                    # Download and analyze image
-                    image_bytes = self.instagram_api.download_media(media_url)
-                    if not image_bytes:
-                        logger.warning(f"Could not download media for post {post_id}")
-                        continue
-                    
-                    # Analyze animal image
-                    results = self.image_analyzer.analyze_animal_image(image_bytes, formatted_date, caption, post_id, permalink)
-                    
-                    # Update spreadsheet with results
-                    for result in results:
-                        self.sheet_service.update_sheet_from_dict(result, self.worksheet_datos)
-                    
+                    # Get image URL based on media type 
+                    media_url = post.get("thumbnail_url") or post.get("media_url")
+                    #if "adoptado" in caption or "actualizacion" in caption:
+                    resp= self.image_analyzer.analyze_caption_post(caption, formatted_date )
+               
+                    image_bytes = []
+                    # resp puede ser '0' o '["nombres",[[u,e,d],...]]'
+                    if resp != 0 or resp != "0":
+                        data = json.loads(resp) 
+                        names = data[0].split(",") 
+                        cant_names = len(names) 
+                        print ("nombres. ", names)
+                        for i, name in enumerate(names): 
+                            id = self.sheet_service.get_id(name, self.worksheet_animal) 
+                            print(name)
+                            if id is None:
+                                # Download and analyze image 
+                                print("id none")
+                                if cant_names == 1 or 'children' not in post :
+                                    print("one animal")
+                                    image_bytes = self.instagram_api.download_media(media_url)
+                                else :
+                                    for i , children in enumerate(post.get("children").get("data")[:cant_names-1]) : 
+                                        #media_url =  children.get("thumbnail_url")  if "thumbnail_url" in children else  children.get("media_url")
+                                        print("children")
+                                        media_url = children.get("thumbnail_url", children.get("media_url"))
+
+                                        image_bytes.append( self.instagram_api.download_media(media_url) )
+        
+                                # Analyze animal image
+                                print ("data0: ", data[0])
+                                results = self.image_analyzer.analyze_animal_image(image_bytes, formatted_date, caption,  data[0])
+                                for i, result in enumerate(results):
+                                    oldest_id = oldest_id +1 
+                                    nuevo_registro = self.armar_datos_a_insertar(oldest_id,result) 
+                                    self.sheet_service.insert_sheet_from_dict(nuevo_registro, self.worksheet_animal) 
+                                    media_url= self.getmediaurl(post ,i,media_url)
+                                    post_id_children = self.getchildrenid(post ,i,post_id) 
+                                    nuevo_registro= self.armar_post_a_insertar(post_id_children,oldest_id,media_url,permalink, formatted_date)
+                                    self.sheet_service.insert_sheet_from_dict(nuevo_registro, self.worksheet_interaccion)
+
+                            for  evento in data[1] :
+                                id = id or (oldest_id - cant_names + 1)
+                                 
+                                nuevo_evento = self.armar_estado_a_insertar(evento,id, formatted_date) 
+                                self.sheet_service.insert_sheet_from_dict(nuevo_evento, self.worksheet_eventos)
+
                     logger.info(f"Successfully processed Instagram post {post_id}")
                     
                 except Exception as e:
-                    logger.error(f"Error processing Instagram post {post.get('id', 'unknown')}: {str(e)}")
+                    logger.error(f"Error processing Instagram post {post_id}: {str(e)}")
             
         except Exception as e:
             logger.error(f"Failed to process Instagram posts: {str(e)}")
+    def getmediaurl(self,post,i,media_url):
+        if 'children' in post :
+            return post.get("children").get("data")[i].get("thumbnail_url") or post.get("children").get("data")[i].get("media_url") 
+        else :
+            return media_url
+    def getchildrenid(self,post,i,post_id):
+        if 'children' in post :
+            return post.get("children").get("data")[i].get("id")
+        else :
+            return post_id
+
+    def filtrarPostNuevos(self,post_list):
+        #Convertir a DataFrame 
+        df = pd.DataFrame(self.worksheet_interaccion.get_all_records())
+        # IDs que NO están en la hoja
+        post_nuevos = [post for post in post_list if post['permalink']  not in df['contenido'].values]
+        return post_nuevos
+
+
+    def armar_datos_a_insertar(self,new_id,result):
+        record_data ={ 
+                    "id":new_id,
+                    "nombre":result["Nombre"],
+                    "fecha":result["Fecha"],
+                    "tipo_animal":result["Tipo Animal"],
+                    "ubicacion":result["Ubicacion"],
+                    "edad":result["Edad"],
+                    "color_de_pelo":result["Color de pelo"],
+                    "condicion_de_salud_inicial":result["Condición de Salud Inicial"],
+                    "activo": "TRUE",
+                    "fecha_actualizacion":result["Fecha"]
+                }
+        return record_data
     
+    def armar_estado_a_insertar(self,evento,id, formated_date):
+
+        evento_nuevo= {                      "animal_id":id,
+                                        "ubicacion_id" : evento[0],
+                                        "estado_id":evento[1],                                        
+                                        "persona_id":evento[3],
+                                        "tipo_relacion_id":evento[4],
+                                        "fecha":evento[2] or formated_date
+                                        }
+        return evento_nuevo
+    
+    def armar_post_a_insertar(self,post_id_children,nuevo_id,media_url,permalink,formatted_date):
+
+        record_post={
+            "animal_id":nuevo_id,
+            "fecha": formatted_date,
+            "post_id": post_id_children,
+            "contenido":permalink,
+            "media_url": media_url
+        }
+
+        return record_post
+
     def run_voice_assistant(self):
         """Run the voice command assistant for interactive usage."""
         logger.info("Starting voice assistant mode")
@@ -178,21 +262,25 @@ class AnimalRescueManager:
         """Process financial transactions from PDFs and Excel files."""
         logger.info("Starting transaction processing")
         self.transaction_processor.process()
+    
+    def process_instagram_histories(self):
+        pass
+    
 
     def run(self):
         """Run the full application workflow."""
         logger.info("Starting Animal Rescue Manager")
         
         # Process images from Google Drive
-        self.process_drive_images(self.folder_recibos, self.worksheet_gastos, "recibo")
-        self.process_drive_images(self.folder_mascotas, self.worksheet_datos, "mascota")
+        #self.process_drive_images(self.folder_recibos, self.worksheet_gastos, "recibo")
+        #self.process_drive_images(self.folder_mascotas, self.worksheet_animal, "mascota")
         
         # Process Instagram posts
         self.process_instagram_posts()
         # Process Instagram histories
         self.process_instagram_histories()
         # Process financial transactions
-        self.process_transactions()
+        #self.process_transactions()
         
         logger.info("Processing complete")
 

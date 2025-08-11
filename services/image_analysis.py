@@ -36,7 +36,7 @@ class ImageAnalyzer:
             response = response[:-3].strip()
         return response
     
-    def analyze_animal_image(self,image_bytes: bytes,date_time: str,caption: Optional[str],image_id: str,url: str) -> List[Dict]:
+    def analyze_animal_image(self,image_bytes,date_time: str,caption: Optional[str], names) -> List[Dict]:
         """Analyze an animal image using OpenAI's vision model.
         
         Args:
@@ -48,49 +48,59 @@ class ImageAnalyzer:
             
         Returns:
             List of dictionaries containing analyzed animal data
-        """
-        logger.info(f"Analyzing animal image with ID: {image_id}")
-        
-        try:
-            # Convert image to base64
-            base64_image = base64.b64encode(image_bytes).decode()
+        """         
+        try: 
             caption_text = caption or ""
             
             # Define system prompt with analysis requirements
-            system_prompt = self._get_animal_prompt_template()
+            system_prompt = self._get_animal_prompt_template() + " " + names
+     
+            content = []
             
-            # Call OpenAI API for image analysis
+            # Agregar texto inicial
+            content.append({
+                "type": "text",
+                "text": (
+                    f"Descripción del post:\n{caption_text}\n\n"
+                    "Analiza esta(s) imagen(es) junto al texto:"
+                )
+            })
+            
+            # Manejar una o múltiples imágenes
+            if isinstance(image_bytes, list):
+                # MÚLTIPLES IMÁGENES
+                for i, img_bytes in enumerate(image_bytes):
+                    base64_img = base64.b64encode(img_bytes).decode()
+                    content.append({
+                        "type": "text", 
+                        "text": f"\n--- Imagen {i+1} ---"
+                    })
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}
+                    })
+            else:
+                # UNA SOLA IMAGEN (tu código original)
+                base64_image = base64.b64encode(image_bytes).decode()
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                })
+            
+            # Resto igual, pero usar 'content' en lugar del objeto hardcodeado
             response = self.client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": (
-                                    f"Descripción del post:\n{caption_text}\n\n"
-                                    "Analiza esta imagen junto al texto y completa los datos requeridos:"
-                                )
-                            },
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}"
-                                }
-                            }
-                        ]
-                    }
+                    {"role": "user", "content": content}  # ← USAR LA LISTA DINÁMICA
                 ],
-                max_tokens=600
+                max_tokens=800  # Aumentar para múltiples imágenes
             )
-            
-            result = response.choices[0].message.content.strip()
-            
+            result = response.choices[0].message.content.strip() 
+            print("resultado", result)
             # Handle "IGNORAR" response (image should be ignored)
             if result.upper() == "IGNORAR":
-                logger.info(f"Image {image_id} marked for ignoring (not an animal)")
+                logger.info(f"Image {names} marked for ignoring (not an animal)")
                 return []
             
             # Clean and parse JSON response
@@ -105,36 +115,26 @@ class ImageAnalyzer:
                 color_string = str(color_info)
             
             # Process names (multiple animals may be in one image)
-            names_raw = analysis.get("nombre", "No detectado")
-            if names_raw != "No detectado":
-                names = [name.strip() for name in names_raw.split(",")]
-            else:
-                names = ["No detectado"]
-            
             # Create records for each animal detected
             records = []
-            for name in names:
+            for name in names.split(","):
                 record = {
                     "Nombre": name,
                     "Fecha": date_time,
                     "Tipo Animal": analysis.get("tipo_animal", "No determinado"),
                     "Ubicacion": analysis.get("Ubicacion", "No determinado"),
                     "Color de pelo": color_string,
-                    "Edad": analysis.get("Edad", "No determinado"),
-                    "Estado Actual": analysis.get("Estado Actual", "No determinado"),
-                    "Condición de Salud Inicial": analysis.get("Condición de Salud Inicial", "No determinado"),
-                    "Adoptante": analysis.get("adoptante", ""),
-                    "id_post": image_id,
-                    "url_instagram": url,
-                    "url_drive": ""
+                    "Edad": analysis.get("Edad", "No determinado"), 
+                    "Condición de Salud Inicial": analysis.get("Condición de Salud Inicial", "No determinado")
                 }
                 records.append(record)
             
-            logger.info(f"Successfully analyzed image {image_id}, found {len(records)} animals")
+            logger.info(f"Successfully analyzed image {names}, found {len(records)} registros")
+            print (records)
             return records
             
         except Exception as e:
-            logger.error(f"Error analyzing animal image {image_id}: {str(e)}")
+            logger.error(f"Error analyzing animal image {names}: {str(e)}")
             return []
     
     def analyze_receipt_image(self,image_bytes: bytes,date_time: str,url: str,name: str,image_id: str ) -> Dict:
@@ -204,21 +204,53 @@ class ImageAnalyzer:
             logger.error(f"Error analyzing receipt image {name}: {str(e)}")
             return {}
     
+    def analyze_caption_post(self,caption: str, timestamp) -> list[str]:
+        logging.info("Analizando caption")
+        prompt = self._get_caption_prompt_template()
+
+        # Call OpenAI API for image analysis
+        response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": prompt + " fecha: " +timestamp},
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    f"Descripción del post:\n{caption}\n\n"
+                                    "Devuelve solo el nombre o nombres de los animales que aparecen en la descripcion"
+                                )
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=700
+            )
+            
+        result = response.choices[0].message.content
+    
+        names= result[0].split(",")
+         
+        logger.info(f"Successfully ,found {len(names)} animals")
+        return result
+
+ 
+    
     def _get_animal_prompt_template(self) -> str:
         """Return the system prompt template for animal image analysis."""
         json_example = (
             '{\n'
-            '  "nombre": "extraído del texto si aparece",\n'
+            '"Nombre": lo que pasa por parametro al final del prompt\n' 
             '  "tipo_animal": "perro o gato",\n'
             '  "color_pelo": [\n'
             '    { "color": "color1", "porcentaje": porcentaje1 },\n'
             '    { "color": "color2", "porcentaje": porcentaje2 }\n'
             '  ],\n'
             '  "Edad": "estimar edad en años o meses sin adicionales",\n'
-            '  "Condición de Salud Inicial": "describir cómo fue recibido",\n'
-            '  "Estado Actual": "En adopción / En tratamiento / Adoptado / Perdido / Fallecido",\n'
-            '  "Ubicacion": "Informar donde fue encontrado si aparece en la descripción de la foto"\n'
-            '  "adoptante": "@usuario" o "No especificado"\n'
+            '  "Condición de Salud Inicial": "describir cómo fue recibido",\n' 
+            '  "Ubicacion": "Informar donde fue encontrado si aparece en la descripción de la foto"\n' 
             '}'
         )
         
@@ -227,28 +259,19 @@ class ImageAnalyzer:
             "Tu tarea es generar un JSON válido con la siguiente estructura:\n\n"
             + json_example +
             "\n\n"
-            "Antes de generar el JSON, evaluá si el contenido se refiere claramente a una o más mascotas reales."
+            "Antes de generar el JSON, evaluá si el contenido se refiere claramente a una o más mascotas reales cuyos nombres son los que se indican al final separados por coma."
             "Si no hay una mascota visible o mencionada en el texto (por ejemplo si es una imagen informativa, un sorteo, cartel, o gráfico general)," 
             "no generes ningún JSON. Simplemente respondé con la palabra: IGNORAR."
             "Debes basarte tanto en la imagen como en el texto que la acompaña. Seguí estas instrucciones:\n"
-            "1. Extraé el nombre del animal si aparece. Puede estar en frases como:\n"
-            "   - 'Soy ___'\n"
-            "   - 'Se llama ___'\n"
-            "   - 'Info sobre ___'\n"
-            "   - 'Este es ___'\n"
-            "2. Si aparecen más de un nombre **de animales distintos**, separalos por comas, sin espacios. Ejemplo: 'Lia,Tomy'.\n"
-            "3. **No se deben considerar como nombres distintos** a los diminutivos, formas cariñosas o abreviaciones del mismo nombre. "
-            "Ejemplo: 'Uva' y 'Uvita' se consideran el mismo animal. Usá el nombre más común o simple (por ejemplo, 'Uva').\n"
-            "4. Usá cualquier mención a enfermedades, tratamientos o condiciones para completar:\n"
-            "   - 'Condición de Salud Inicial'\n"
-            "   - 'Estado Actual'\n"
+            "2. Devolver la lista de nombre o el nombre dado.\n"
+             "4. Usá cualquier mención a enfermedades, tratamientos o condiciones para completar:\n"
+            "   - 'Condición de Salud Inicial'\n" 
             "5. Estimá la edad del animal si es posible (años o meses, sin agregar 'aproximadamente', 'más o menos', etc.).\n"
             "6. Si se menciona un lugar o barrio donde fue encontrado o rescatado, usalo en 'Ubicacion'.\n"
             "7. Si podés identificar colores predominantes del pelaje, agregalos con un porcentaje aproximado (máximo 2 colores).\n\n"
             "⚠ IMPORTANTE: No incluyas el bloque de código markdown ni ningún otro tipo de formato. Respondé solamente con el contenido entre { y }"
             "La respuesta debe empezar con { y terminar con }."
             "8. El campo 'Edad' debe incluir siempre la unidad de tiempo ('años' o 'meses'). Nunca debe aparecer como un número solo.- Ejemplo válido: '2 años', '6 meses'- Ejemplo inválido: '2' \n"
-            "9. Si el texto menciona a la persona que adoptó (por ejemplo con una cuenta como '@usuario'), incluila en un campo llamado 'adoptante'. Si no se menciona, dejalo como ''"
         )
     
     def _get_receipt_prompt_template(self) -> str:
@@ -274,4 +297,59 @@ class ImageAnalyzer:
             "\nSi algún campo no está presente o no se puede deducir de la imagen, usa ' '.\n"
             "IMPORTANTE: Devuelve ÚNICAMENTE el objeto JSON sin marcadores de código, sin texto explicativo adicional. "
             "El JSON debe comenzar con el carácter { y terminar con }"
+        )
+    
+    def _get_caption_prompt_template(self)-> str:
+        return (""" Devolvé SOLO la salida mínima indicada. Nada de texto extra.
+Al final se encuentra la fecha de publicación :
+FECHA_PUBLICACION: 2025-08-09 19:00:00
+
+SALIDA:
+- No hay animales concretos (institucional): 0
+- Hay animales: ["<nombres|sin_nombre>",[[u,e,"t",p,r],...]]
+
+MAPEOS:
+u:1 Refugio,2 Transito,3 Veterinaria,4 Hogar_adoptante
+e:1 Perdido,2 En Tratamiento,3 En Adopción,5 Adoptado,6 Fallecido
+r:1 Adoptante,2 Transitante,3 Veterinario,4 Voluntario,5 Interesado
+
+NOMBRES:
+- Detectar en: "Soy ___","Se llama ___","Este es ___","Conocé a ___","Info sobre ___", hashtags #Nombre, menciones @nombre.
+- Normalizar: minúsculas, sin emojis/acentos/signos, trim. Diminutivos NO duplican (uva/uvita=>"uva").
+- Varios animales: separar por comas SIN espacios ("luna,max").
+- Si hay animales pero sin nombres claros: "sin_nombre".
+- Si NO trata de animales concretos: devolver 0.
+
+EVENTOS (cada item = [u,e,"t",p,r]):
+- Una sola acción/estado => un solo item. Historia o "ACTUALIZACIÓN:" => múltiples en orden cronológico.
+- Prioridad de estado si hay señales simultáneas: 6>5>2>3>1.
+Reglas:
+- “tratamiento/medicación/operación” => e=2 (no adopción).
+- “buscamos/necesitamos tránsito” y no dice que esté en adopción => e=2 (ubicación por defecto u=1 si no hay otra).
+- “adoptado/adoptada” => e=5 y u=4.
+- Ubicación: u=2 SOLO con evidencia (“en tránsito”/“hogar temporal”/“con [persona]”); u=3 SOLO si internado/hospitalizado/“queda en clínica/guardia 24h”; si no hay señal, u=1.
+- Hashtags imperativos (#transita,#adopta) NO cambian u/e por sí solos.
+
+PERSONA p y RELACIÓN r:
+- Extraer si el texto asocia claramente persona con el evento:
+  - Tránsito: “en tránsito con X”, “gracias a X por transitar”, “con X” ⇒ r=2.
+  - Adopción: “adoptado por X”, “gracias X por adoptarlo” ⇒ r=1.
+  - Veterinaria: “Dra./Dr./clínica ___”, “queda internado en ___” ⇒ r=3.
+  - Voluntario: “gracias X por rescatar/trasladar/alojar” (si no es tránsito/adopción) ⇒ r=4.
+  - Interesado: solo si nombra a alguien como interesado específico ⇒ r=5.
+- Normalizar p: preferir @usuario (sin @). Si no hay handle, usar nombre en minúsculas sin acentos; espacios→guion_bajo. Si no hay persona, p=""; r=0.
+
+FECHA ABSOLUTA "t" (derivada de FECHA_PUBLICACION):
+- Si el evento ocurre “hoy” ⇒ usar EXACTAMENTE la FECHA_PUBLICACION en formato "DD/MM/AAAA HH:MM:SS".
+- “ayer”/“anoche” ⇒ FECHA_PUBLICACION - 1 día (misma hora).
+- “anteayer” ⇒ -2 días.
+- “hace X días/horas/semanas/meses/años” ⇒ restar esa cantidad desde FECHA_PUBLICACION (semana≈7, mes≈30, año≈365) conservando la hora; si se puede, restar meses/años en calendario (mismo día de mes; si no existe, último día).
+- Fechas absolutas en el texto (DD/MM[/AAAA] o “DD de <mes>”): convertirlas a "DD/MM/AAAA HH:MM:SS" usando la hora de FECHA_PUBLICACION si el texto no da hora.
+- Si no hay pista temporal para ese evento ⇒ "".
+
+FORMATO:
+- Responder EXACTAMENTE 0 o ["<nombres|sin_nombre>",[[u,e,"t",p,r],...]] sin espacios ni saltos de línea.
+
+"""
+
         )
