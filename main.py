@@ -142,11 +142,13 @@ class AnimalRescueManager:
                     media_url = post.get("thumbnail_url") or post.get("media_url")
                     #if "adoptado" in caption or "actualizacion" in caption:
                     resp= self.image_analyzer.analyze_caption_post(caption, formatted_date )
-               
+                    print("resp" , resp)
                     image_bytes = []
                     # resp puede ser '0' o '["nombres",[[u,e,d],...]]'
                     if resp != 0 or resp != "0":
                         data = json.loads(resp) 
+                        print(data)
+                        print(len(data))
                         names = data[0].split(",") 
                         cant_names = len(names) 
                         print ("nombres. ", names)
@@ -179,9 +181,9 @@ class AnimalRescueManager:
                                     nuevo_registro= self.armar_post_a_insertar(post_id_children,oldest_id,media_url,permalink, formatted_date)
                                     self.sheet_service.insert_sheet_from_dict(nuevo_registro, self.worksheet_interaccion)
 
-                            for  evento in data[1] :
-                                id = id or (oldest_id - cant_names + 1)
-                                 
+                            for evento in data[1] :
+                                print("evento" , evento)
+                                id = id or (oldest_id - cant_names + 1) 
                                 nuevo_evento = self.armar_estado_a_insertar(evento,id, formatted_date) 
                                 self.sheet_service.insert_sheet_from_dict(nuevo_evento, self.worksheet_eventos)
 
@@ -203,13 +205,20 @@ class AnimalRescueManager:
         else :
             return post_id
 
-    def filtrarPostNuevos(self,post_list):
-        #Convertir a DataFrame 
+    def filtrarPostNuevos(self, post_list):
+        # traer existentes y pasarlos a set para lookup O(1)
         df = pd.DataFrame(self.worksheet_interaccion.get_all_records())
-        # IDs que NO están en la hoja
-        post_nuevos = [post for post in post_list if post['permalink']  not in df['contenido'].values]
-        return post_nuevos
+        existentes = set(df['contenido'].dropna().astype(str)) if (not df.empty and 'contenido' in df.columns) else set()
 
+        # filtrar por permalink
+        post_nuevos = [p for p in post_list if str(p.get('permalink', '')) not in existentes]
+
+        # ordenar por timestamp (más nuevos primero)
+        post_nuevos.sort(
+            key=lambda x: datetime.strptime(x['timestamp'], "%Y-%m-%dT%H:%M:%S%z"),
+            reverse=False        )
+        
+        return post_nuevos
 
     def armar_datos_a_insertar(self,new_id,result):
         record_data ={ 

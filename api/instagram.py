@@ -25,7 +25,7 @@ class InstagramAPI:
         else:
             logger.info("Instagram API client initialized")
     
-    def get_recent_posts(self, earliest_date: Optional[datetime] = None, limit: int = 10) -> List[Dict[str, Any]]:
+    def get_recent_posts(self, earliest_date: Optional[datetime] = None, limit: int = 20) -> List[Dict[str, Any]]:
         """Fetch recent Instagram posts.
         
         Args:
