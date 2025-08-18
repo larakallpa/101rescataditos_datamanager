@@ -180,6 +180,9 @@ class AnimalRescueManager:
                                     post_id_children = self.getchildrenid(post ,i,post_id) 
                                     nuevo_registro= self.armar_post_a_insertar(post_id_children,oldest_id,media_url,permalink, formatted_date)
                                     self.sheet_service.insert_sheet_from_dict(nuevo_registro, self.worksheet_interaccion)
+                            else :
+                                nuevo_registro= self.armar_post_a_insertar(post_id,id,media_url,permalink, formatted_date)
+                                self.sheet_service.insert_sheet_from_dict(nuevo_registro, self.worksheet_interaccion)
 
                             for evento in data[1] :
                                 print("evento" , evento)
